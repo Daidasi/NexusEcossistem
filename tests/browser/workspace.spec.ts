@@ -1,0 +1,34 @@
+import { test,expect } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+test('real UI registration, persistent chat, private memory, connections form and mobile controls',async({page})=>{
+ await page.goto('/');
+ await page.getByRole('button',{name:'Primeira vez? Criar uma conta'}).click();
+ await page.getByLabel('Seu nome').fill('QA Browser');
+ await page.getByLabel('E-mail',{exact:true}).fill(`ui-${randomUUID()}@example.test`);
+ await page.getByLabel('Senha Mínimo de 12 caracteres').fill(`QA_only_${randomUUID()}`);
+ await page.getByRole('button',{name:'Criar conta →',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Vamos conectar ideias.'})).toBeVisible();
+ await page.getByRole('button',{name:'+ Nova sala',exact:true}).click();
+ await page.getByLabel('Nome da sala').fill('Sala do navegador');
+ await page.getByRole('button',{name:'Criar sala',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Sala do navegador'})).toBeVisible();
+ await page.getByLabel('Mensagem',{exact:true}).fill('Histórico real do navegador, sem resposta de IA simulada.');
+ await page.getByRole('button',{name:'Enviar ↑'}).click();
+ await expect(page.getByText('Histórico real do navegador, sem resposta de IA simulada.',{exact:true})).toBeVisible();
+ await page.reload();
+ await expect(page.getByText('Histórico real do navegador, sem resposta de IA simulada.',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:/^Memória/}).click();
+ await page.getByRole('button',{name:'+ Criar memória',exact:true}).click();
+ await page.getByLabel('Título',{exact:true}).fill('Memória privada QA');
+ await page.getByLabel('Conteúdo',{exact:true}).fill('Dados sintéticos de teste.');
+ await page.getByRole('button',{name:'Salvar memória',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Memória privada QA'})).toBeVisible();
+ await page.getByRole('button',{name:'+ Conectar IA',exact:true}).click();
+ await expect(page.getByLabel('Chave de API')).toBeVisible();
+ await page.getByLabel('Provedor',{exact:true}).selectOption('anthropic');
+ await expect(page.getByLabel('Provedor',{exact:true})).toHaveValue('anthropic');
+ await page.getByRole('button',{name:'Fechar',exact:true}).click();
+ // No credentials are submitted and no provider request is made by this browser test.
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1);
+ expect(overflow).toBe(false);
+});
