@@ -1,8 +1,7 @@
 name: NexusBridge quality
 on:
   pull_request:
-  push:
-    branches: [feat/nexusbridge-v0.1]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -18,7 +17,7 @@ jobs:
           POSTGRES_PASSWORD: disposable-ci-password
         ports: ['5432:5432']
         options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U nexus -d nexus_test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://nexus:disposable-ci-password@localhost:5432/nexus_test
       NEXUS_TEST_DATABASE_URL: postgresql://nexus:disposable-ci-password@localhost:5432/nexus_test
@@ -32,7 +31,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Disposable encryption key
-        run: node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'NEXUS_ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('base64')+'\n')"
+        run: node -e "const key=require('crypto').randomBytes(32).toString('base64');console.log('::add-mask::'+key);require('fs').appendFileSync(process.env.GITHUB_ENV, 'NEXUS_ENCRYPTION_KEY='+key+'\n')"
       - run: npm run db:migrate
       - run: npm run lint
       - run: npm run typecheck

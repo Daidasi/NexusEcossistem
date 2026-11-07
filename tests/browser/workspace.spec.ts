@@ -10,7 +10,7 @@ test('real UI registration, persistent chat, private memory, connections form an
  await expect(page.getByRole('heading',{name:'Vamos conectar ideias.'})).toBeVisible();
  await page.getByRole('button',{name:'+ Nova sala',exact:true}).click();
  await page.getByLabel('Nome da sala').fill('Sala do navegador');
- await page.getByRole('button',{name:'Criar sala',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:'Criar sala',exact:true}).click();
  await expect(page.getByRole('heading',{name:'Sala do navegador'})).toBeVisible();
  await page.getByLabel('Mensagem',{exact:true}).fill('Histórico real do navegador, sem resposta de IA simulada.');
  await page.getByRole('button',{name:'Enviar ↑'}).click();

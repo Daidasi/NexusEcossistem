@@ -77,6 +77,7 @@ async function callOne(db:Db,user:User,runId:string,roomId:string,id:string,prom
  try {
   const selected=await attached(db,user,roomId,id);display=selected.name;prov=selected.provider;model=selected.model;owner=selected.owner_id;
   res=await reserve(db,user,runId,roomId,id);
+  display=res.configuration.name;prov=res.configuration.provider;model=res.configuration.model;owner=res.configuration.owner_id;
   const plan=await prepareContext(db,user,roomId,id,prompt);refs=plan.refs;
   // Durable intent precedes network I/O. A crash leaves an auditable intent plus a reserved ledger row.
   await audit(db,user.id,'provider.dispatch_intent',id,roomId,{provider:prov,model,purpose:'room_reply',scope:'room',memoryRefs:refs,runId,usageId:res.usageId});

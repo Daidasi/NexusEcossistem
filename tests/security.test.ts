@@ -148,3 +148,69 @@ describe('Membership and persistence',()=>{
   await expect(snapshot(disk,{id:randomUUID(),email:'other@example.test',name:'Other'},r.id)).rejects.toThrow();await disk.close();await rm(path,{recursive:true,force:true});
  });
 });
+describe('Review regressions',()=>{
+ it('retains a durable recipient/memory audit on provider timeout',async()=>{
+  const a=await user(),r=await room(a),c=await connection(a);await attach(a,r,c);
+  const memory=await saveMemory(db,a,{title:'banana',content:'banana AUDIT_CONTENT_PRIVATE',scope:'room',roomId:r,grants:[c],confirmSharing:true});
+  await send(a,r,[c],'banana',{}, {...adapter,complete:async()=>{throw new Error('timeout');}});
+  const events=await db.query<{action:string;details:Record<string,unknown>}>('SELECT action,details FROM audit WHERE room_id=$1',[r]);
+  const intent=events.find(e=>e.action==='provider.dispatch_intent');expect(intent).toBeDefined();expect(JSON.stringify(intent)).toContain(memory.id);expect(JSON.stringify(events)).not.toContain('AUDIT_CONTENT_PRIVATE');
+  expect(events.find(e=>e.action==='provider.failed')?.details.dispatched).toBe(true);
+ });
+ it('configuration changes before dispatch are rejected and fully refunded',async()=>{
+  const a=await user(),r=await room(a),c=await connection(a);await attach(a,r,c);
+  const hooked:Db={...db,query:async<T>(sql:string,params:unknown[]=[])=>{
+   const rows=await db.query<T>(sql,params);
+   if(sql.startsWith('INSERT INTO audit')&&params[2]==='provider.dispatch_intent')await execute(db,a,'setConnection',{id:c,available:true,model:'changed-model',inputRate:100,outputRate:100});
+   return rows;
+  }};
+  const before=calls.length;await orchestrate(hooked,a,{roomId:r,requestId:randomUUID(),content:'hello',connectionIds:[c]},adapter);
+  expect(calls.length).toBe(before);const [ledger]=await db.query<{status:string;cost_micro:string}>('SELECT status,cost_micro FROM usage WHERE room_id=$1',[r]);
+  expect(ledger.status).toBe('not_dispatched');expect(Number(ledger.cost_micro)).toBe(0);
+  const [budget]=await db.query<{tokens_spent:string;tokens_reserved:string}>('SELECT tokens_spent,tokens_reserved FROM connections WHERE id=$1',[c]);expect(Number(budget.tokens_spent)+Number(budget.tokens_reserved)).toBe(0);
+  await expect(execute(db,a,'setConnection',{id:c,available:true,model:'another-model'})).rejects.toThrow('tarifas');
+ });
+ it('revocation between context assembly and dispatch prevents transmission',async()=>{
+  const a=await user(),r=await room(a),c=await connection(a);await attach(a,r,c);
+  const m=await saveMemory(db,a,{title:'banana',content:'banana REVOKE_RACE',scope:'room',roomId:r,grants:[c],confirmSharing:true});
+  const hooked:Db={...db,query:async<T>(sql:string,params:unknown[]=[])=>{const rows=await db.query<T>(sql,params);if(sql.startsWith('INSERT INTO audit')&&params[2]==='provider.dispatch_intent')await revokeMemory(db,a,m.id);return rows;}};
+  const before=calls.length;await orchestrate(hooked,a,{roomId:r,requestId:randomUUID(),content:'banana',connectionIds:[c]},adapter);expect(calls.length).toBe(before);
+ });
+ it('only one concurrent import confirmation succeeds; revisions preserve the original',async()=>{
+  const a=await user(),draft=await previewImport(db,a,'once.txt','ORIGINAL');
+  const payload={draftId:draft.id,memory:{title:'once',content:draft.content},confirmed:true};
+  const result=await Promise.allSettled([execute(db,a,'importConfirm',payload),execute(db,a,'importConfirm',payload)]);
+  expect(result.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const [m]=await db.query<{id:string}>('SELECT id FROM memories WHERE owner_id=$1',[a.id]);await saveMemory(db,a,{title:'changed',content:'DERIVED'},m.id);
+  const exported=await execute(db,a,'memoryExport',{});expect(JSON.stringify(exported)).toContain('ORIGINAL');expect(JSON.stringify(exported)).toContain('DERIVED');
+ });
+ it('exports all owned memories beyond the UI page size',async()=>{
+  const a=await user();
+  for(let i=0;i<205;i++)await db.query("INSERT INTO memories(id,owner_id,title,content,scope,origin,source,source_hash) VALUES($1,$2,'export','canary','personal','nexus','test','test')",[randomUUID(),a.id]);
+  const exported=await execute(db,a,'memoryExport',{}) as {memories:unknown[]};expect(exported.memories).toHaveLength(205);
+ });
+ it('unsharing removes human access as well as agent access',async()=>{
+  const a=await user(),b=await user(),r=await room(a),c=await connection(a);await join(a,b,r);await attach(a,r,c);
+  const m=await saveMemory(db,a,{title:'banana',content:'UNSHARE_CANARY banana',scope:'room',roomId:r,grants:[c],confirmSharing:true});
+  expect(JSON.stringify(await snapshot(db,b,r))).toContain('UNSHARE_CANARY');await execute(db,a,'memoryUnshare',{id:m.id});
+  expect(JSON.stringify(await snapshot(db,b,r))).not.toContain('UNSHARE_CANARY');expect(await retrieve(db,a,r,c,'banana')).toHaveLength(0);
+ });
+});
+describe('Membership and credential race regressions',()=>{
+ it('invalidates unused invitations when a participant is removed',async()=>{
+  const a=await user(),b=await user(),r=await room(a);
+  const old=await execute(db,a,'invite',{roomId:r,email:b.email}) as {token:string};
+  await join(a,b,r);await execute(db,a,'removeMember',{roomId:r,userId:b.id});
+  await expect(execute(db,b,'acceptInvite',old)).rejects.toThrow('Convite inválido');
+  await expect(snapshot(db,b,r)).rejects.toThrow();
+ });
+ it('concurrent pause and credential rotation never restore the previous key',async()=>{
+  const a=await user(),c=await connection(a);
+  await Promise.all([
+   execute(db,a,'setConnection',{id:c,available:false}),
+   execute(db,a,'setConnection',{id:c,available:true,apiKey:'TEST_ROTATED_KEY_ONLY'})
+  ]);
+  const [row]=await db.query<{secret:string}>('SELECT secret FROM connections WHERE id=$1',[c]);
+  expect(unseal(row.secret,a.id,c)).toBe('TEST_ROTATED_KEY_ONLY');
+ });
+});

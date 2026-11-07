@@ -55,6 +55,9 @@ export async function execute(db:Db,user:User,action:string,input:unknown,adapte
  await rateLimit(db,`ops:${user.id}`,120);
  switch(action) {
  case 'snapshot': {const v=z.object({roomId:uuid.optional()}).parse(input);return snapshot(db,user,v.roomId);}
+ case 'logoutAll': {
+  await db.query('DELETE FROM sessions WHERE user_id=$1',[user.id]);return {ok:true};
+ }
  case 'createProject': {
   const v=z.object({name:text}).parse(input);const id=randomUUID();
   await db.transaction(async tx=>{await tx.query('INSERT INTO projects(id,owner_id,name) VALUES($1,$2,$3)',[id,user.id,v.name]);await tx.query('INSERT INTO project_members(project_id,user_id) VALUES($1,$2)',[id,user.id]);});return {id};
@@ -85,6 +88,7 @@ export async function execute(db:Db,user:User,action:string,input:unknown,adapte
   const v=z.object({roomId:uuid,userId:uuid}).parse(input);const room=await member(db,user,v.roomId);
   demand(room.owner_id===user.id && v.userId!==user.id);
   await db.transaction(async tx=>{
+   await tx.query('UPDATE invitations SET used=true WHERE room_id=$1 AND email=(SELECT email FROM users WHERE id=$2) AND used=false',[v.roomId,v.userId]);
    await tx.query('SELECT id FROM connections WHERE owner_id=$1 ORDER BY id FOR NO KEY UPDATE',[v.userId]);
    await tx.query('SELECT rc.connection_id FROM room_connections rc JOIN connections c ON c.id=rc.connection_id WHERE rc.room_id=$1 AND c.owner_id=$2 ORDER BY rc.connection_id FOR UPDATE OF rc',[v.roomId,v.userId]);
    await tx.query('DELETE FROM room_members WHERE room_id=$1 AND user_id=$2',[v.roomId,v.userId]);
@@ -100,10 +104,12 @@ export async function execute(db:Db,user:User,action:string,input:unknown,adapte
  }
  case 'setConnection': {
   const v=z.object({id:uuid,available:z.boolean(),model:z.string().trim().regex(/^[a-zA-Z0-9._:/-]{1,120}$/).optional(),apiKey:z.string().trim().min(8).max(4096).optional(),inputRate:z.number().positive().max(10000).optional(),outputRate:z.number().positive().max(10000).optional()}).parse(input);
-  const [c]=await db.query<Connection>('SELECT * FROM connections WHERE id=$1 AND owner_id=$2',[v.id,user.id]);demand(c);
+  return db.transaction(async tx=>{
+  const [c]=await tx.query<Connection>('SELECT * FROM connections WHERE id=$1 AND owner_id=$2 FOR NO KEY UPDATE',[v.id,user.id]);demand(c);
   demand(!v.model || v.model===c.model || (v.inputRate && v.outputRate),'Informe as tarifas atualizadas ao trocar o modelo.',400);
-  await db.query('UPDATE connections SET available=$1,model=$2,secret=$3,status=$4,input_rate=$6,output_rate=$7 WHERE id=$5',[v.available,v.model??c.model,v.apiKey?seal(v.apiKey,user.id,c.id):c.secret,v.apiKey||v.model?'unverified':c.status,c.id,v.inputRate??c.input_rate,v.outputRate??c.output_rate]);
-  await audit(db,user.id,'connection.updated',v.id,null,{available:v.available});return {ok:true};
+  await tx.query('UPDATE connections SET available=$1,model=$2,secret=$3,status=$4,input_rate=$6,output_rate=$7 WHERE id=$5',[v.available,v.model??c.model,v.apiKey?seal(v.apiKey,user.id,c.id):c.secret,v.apiKey||v.model?'unverified':c.status,c.id,v.inputRate??c.input_rate,v.outputRate??c.output_rate]);
+  await audit(tx,user.id,'connection.updated',v.id,null,{available:v.available});return {ok:true};
+  });
  }
  case 'models': {
   const v=z.object({id:uuid}).parse(input);const [c]=await db.query<Connection>('SELECT * FROM connections WHERE id=$1 AND owner_id=$2',[v.id,user.id]);demand(c);
@@ -130,6 +136,15 @@ export async function execute(db:Db,user:User,action:string,input:unknown,adapte
  }
  case 'memorySave': {const v=z.object({id:uuid.optional(),memory:memoryInput}).parse(input);return saveMemory(db,user,v.memory,v.id);}
  case 'memoryRevoke': {const v=z.object({id:uuid,remove:z.boolean().default(false)}).parse(input);return revokeMemory(db,user,v.id,v.remove);}
+ case 'memoryUnshare': {
+  const v=z.object({id:uuid}).parse(input);return db.transaction(async tx=>{
+   const [m]=await tx.query<{room_id:string|null}>('SELECT room_id FROM memories WHERE id=$1 AND owner_id=$2 FOR UPDATE',[v.id,user.id]);demand(m);
+   await tx.query('DELETE FROM memory_grants WHERE memory_id=$1',[v.id]);
+   await tx.query("UPDATE memories SET scope='personal',room_id=NULL,project_id=NULL,version=version+1,updated_at=now() WHERE id=$1",[v.id]);
+   await tx.query('INSERT INTO memory_versions(memory_id,version,content,origin,source_hash) SELECT id,version,content,origin,source_hash FROM memories WHERE id=$1',[v.id]);
+   await audit(tx,user.id,'memory.unshared',v.id,m.room_id);return {ok:true};
+  });
+ }
  case 'memoryExport': {const memories=await db.query(`SELECT m.*,COALESCE((SELECT jsonb_agg(v ORDER BY version) FROM memory_versions v WHERE v.memory_id=m.id),'[]') AS revisions FROM memories m WHERE owner_id=$1 ORDER BY updated_at`,[user.id]);return {version:1,exportedAt:new Date().toISOString(),memories};}
  case 'importPreview': {const v=z.object({filename:text,raw:z.string().max(256000)}).parse(input);return previewImport(db,user,v.filename,v.raw);}
  case 'importConfirm': {
