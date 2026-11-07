@@ -1,0 +1,58 @@
+name: NexusBridge quality
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nexus_test
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: disposable-ci-password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://nexus:disposable-ci-password@localhost:5432/nexus_test
+      NEXUS_TEST_DATABASE_URL: postgresql://nexus:disposable-ci-password@localhost:5432/nexus_test
+      APP_ORIGIN: http://127.0.0.1:3000
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Disposable encryption key
+        run: node -e "const key=require('crypto').randomBytes(32).toString('base64');console.log('::add-mask::'+key);require('fs').appendFileSync(process.env.GITHUB_ENV, 'NEXUS_ENCRYPTION_KEY='+key+'\n')"
+      - run: npm run db:migrate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm audit --audit-level=moderate
+      - run: npm run build
+      - name: Start production server for tests
+        run: |
+          npm start > /tmp/nexus-next.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/ > /dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:3000/ > /dev/null
+      - run: npm run test:http
+        env:
+          NEXUS_E2E_URL: http://127.0.0.1:3000
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+        env:
+          NEXUS_E2E_URL: http://127.0.0.1:3000
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: test-results/
+          retention-days: 7

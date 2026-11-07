@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: ${NEXUS_DB_PASSWORD:?Set a strong database password}
+    volumes:
+      - nexus_db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U nexus -d nexus']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  app:
+    build: .
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      DATABASE_URL: postgresql://nexus:${NEXUS_DB_PASSWORD}@db:5432/nexus
+      APP_ORIGIN: ${APP_ORIGIN:?Set the exact application origin}
+      NEXUS_ENCRYPTION_KEY: ${NEXUS_ENCRYPTION_KEY:?Set a 32-byte base64 key}
+      NEXUS_REGISTRATION_CODE: ${NEXUS_REGISTRATION_CODE:?Set a beta registration code}
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  nexus_db:
