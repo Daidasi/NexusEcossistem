@@ -13,6 +13,14 @@ export async function POST(request:NextRequest) {
   const configured=process.env.APP_ORIGIN;
   if(process.env.NODE_ENV==='production' && !configured)throw new Error('APP_ORIGIN required');
   const expected=configured??new URL(request.url).origin;
+  if (request.headers.get('origin') !== expected) {
+  console.warn(JSON.stringify({
+    originRecebido: request.headers.get('origin'),
+    appOriginEsperado: expected,
+    host: request.headers.get('host'),
+    forwardedHost: request.headers.get('x-forwarded-host')
+  }));
+}
   demand(request.headers.get('origin')===expected,'Origem não autorizada.');
   demand(request.headers.get('content-type')?.startsWith('application/json'),'Envie JSON.',415);
   const reader=request.body?.getReader();demand(reader,'Corpo ausente.',400);
